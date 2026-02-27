@@ -1,0 +1,621 @@
+---
+- name: Comprehensive System Performance Check - HTML Report
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    report_dir: "/tmp/ansible_reports"
+    report_file: "/tmp/ansible_reports/system_report.html"
+    http_port: 8888
+
+  tasks:
+    - name: Create report directory
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+
+    # ============ GATHER ALL METRICS ============
+    - name: Get CPU Information
+      shell: |
+        echo "CPU Count: $(nproc)"
+        echo "CPU Model: $(lscpu | grep 'Model name' | cut -d: -f2 | xargs)"
+        echo "CPU Cores: $(lscpu | grep '^Core' | awk '{print $NF}')"
+        echo "CPU Threads: $(lscpu | grep '^Thread' | awk '{print $NF}')"
+        echo "CPU MHz: $(lscpu | grep 'CPU max MHz' | awk '{print $NF}')"
+      register: cpu_info
+      changed_when: false
+
+    - name: Get CPU Load Average
+      shell: |
+        uptime | awk -F'load average:' '{print $2}'
+      register: load_avg
+      changed_when: false
+
+    - name: Get CPU Usage Percentage
+      shell: |
+        top -bn1 | grep "Cpu(s)" | awk '{print $2 " user, " $4 " system, " $6 " nice, " $8 " idle"}'
+      register: cpu_usage
+      changed_when: false
+
+    - name: Get Memory Information
+      shell: |
+        free -h | awk 'NR==2{print $2 "|" $3 "|" $4 "|" $7}'
+      register: memory_info
+      changed_when: false
+
+    - name: Get Memory Usage Percentage
+      shell: |
+        free | awk 'NR==2{printf "%.2f", ($3/$2)*100}'
+      register: memory_usage_pct
+      changed_when: false
+
+    - name: Get Swap Information
+      shell: |
+        free -h | awk 'NR==3{print $2 "|" $3 "|" $4}'
+      register: swap_info
+      changed_when: false
+
+    - name: Get Disk Usage (all filesystems)
+      shell: |
+        df -h | awk 'NR>1{print $1 "|" $2 "|" $3 "|" $4 "|" $5}'
+      register: disk_usage
+      changed_when: false
+
+    - name: Get Disk I/O Statistics
+      shell: |
+        iostat -x 1 2 2>/dev/null | tail -n +4 | head -n 5 | awk '{if(NF>0) print $1 "|" $6 "|" $7}' || echo "N/A|N/A|N/A"
+      register: disk_io
+      changed_when: false
+      ignore_errors: true
+
+    - name: Get Network Interface Statistics
+      shell: |
+        ip -s link | awk '/^[0-9]+:/{iface=$2; gsub(":","",iface)} /RX packets|TX packets/{if(iface) print iface "|" $2 "|" $7}'
+      register: network_stats
+      changed_when: false
+
+    - name: Get Network Configuration
+      shell: |
+        ip addr | grep -E '^\s+inet ' | awk '{print $NF ": " $2}'
+      register: network_config
+      changed_when: false
+
+    - name: Get Network Connections Summary
+      shell: |
+        echo "$(netstat -tn 2>/dev/null | wc -l)|$(netstat -un 2>/dev/null | wc -l)|$(netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l)|$(netstat -tn 2>/dev/null | grep TIME_WAIT | wc -l)" || echo "N/A|N/A|N/A|N/A"
+      register: network_conn
+      changed_when: false
+      ignore_errors: true
+
+    - name: Get Process Count
+      shell: |
+        echo "$(ps aux | wc -l)|$(ps -e --no-headers | wc -l)|$(ps -e --no-headers -o state | grep S | wc -l)"
+      register: process_count
+      changed_when: false
+
+    - name: Get Top CPU Consuming Processes
+      shell: |
+        ps aux --sort=-%cpu | head -6 | awk 'NR>1{printf "%s|%s|%s\n", $11, $3, $6/1000}'
+      register: top_cpu_procs
+      changed_when: false
+
+    - name: Get Top Memory Consuming Processes
+      shell: |
+        ps aux --sort=-%mem | head -6 | awk 'NR>1{printf "%s|%s|%s\n", $11, $4, $6/1000}'
+      register: top_mem_procs
+      changed_when: false
+
+    - name: Get System Uptime
+      shell: |
+        uptime -p
+      register: uptime
+      changed_when: false
+
+    - name: Get System Date and Time
+      shell: |
+        date '+%Y-%m-%d %H:%M:%S %Z'
+      register: sys_datetime
+      changed_when: false
+
+    - name: Get Kernel Information
+      shell: |
+        echo "$(uname -r)|$(lsb_release -d | cut -f2)"
+      register: kernel_info
+      changed_when: false
+
+    - name: Get System Temperature
+      shell: |
+        sensors 2>/dev/null | grep -E 'Core|Package' | head -5 | awk '{print $0}' || echo "Not available"
+      register: system_temp
+      changed_when: false
+      ignore_errors: true
+
+    - name: Get Mounted Filesystems
+      shell: |
+        mount | grep -E 'on / |ext4|xfs|btrfs' | awk '{print $1 " on " $3 " (" $5 ")"}'
+      register: filesystems
+      changed_when: false
+
+    - name: Get System Memory Cache
+      shell: |
+        cat /proc/meminfo | grep -E '^Buffers|Cached|Slab' | awk '{print $1 " " $2 " KB"}'
+      register: memory_cache
+      changed_when: false
+
+    # ============ GENERATE HTML REPORT ============
+    - name: Copy HTML report template into destination
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>System Performance Report</title>
+              <style>
+                  * {
+                      margin: 0;
+                      padding: 0;
+                      box-sizing: border-box;
+                  }
+                  body {
+                      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      min-height: 100vh;
+                      padding: 20px;
+                  }
+                  .container {
+                      max-width: 1200px;
+                      margin: 0 auto;
+                      background: white;
+                      border-radius: 10px;
+                      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+                      overflow: hidden;
+                  }
+                  .header {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                      padding: 30px;
+                      text-align: center;
+                  }
+                  .header h1 {
+                      font-size: 2.5em;
+                      margin-bottom: 10px;
+                  }
+                  .header p {
+                      font-size: 1.1em;
+                      opacity: 0.9;
+                  }
+                  .content {
+                      padding: 30px;
+                  }
+                  .section {
+                      margin-bottom: 30px;
+                      padding: 20px;
+                      background: #f8f9fa;
+                      border-left: 5px solid #667eea;
+                      border-radius: 5px;
+                  }
+                  .section h2 {
+                      color: #667eea;
+                      margin-bottom: 15px;
+                      font-size: 1.5em;
+                  }
+                  .info-grid {
+                      display: grid;
+                      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                      gap: 15px;
+                  }
+                  .info-item {
+                      background: white;
+                      padding: 15px;
+                      border-radius: 5px;
+                      border: 1px solid #e0e0e0;
+                  }
+                  .info-label {
+                      font-weight: bold;
+                      color: #333;
+                      margin-bottom: 5px;
+                  }
+                  .info-value {
+                      color: #666;
+                      font-size: 0.95em;
+                      word-break: break-word;
+                  }
+                  .progress-bar {
+                      width: 100%;
+                      height: 20px;
+                      background: #e0e0e0;
+                      border-radius: 10px;
+                      overflow: hidden;
+                      margin-top: 5px;
+                  }
+                  .progress-fill {
+                      height: 100%;
+                      background: linear-gradient(90deg, #667eea, #764ba2);
+                      transition: width 0.3s ease;
+                  }
+                  table {
+                      width: 100%;
+                      border-collapse: collapse;
+                      margin-top: 15px;
+                  }
+                  table th {
+                      background: #667eea;
+                      color: white;
+                      padding: 12px;
+                      text-align: left;
+                      font-weight: bold;
+                  }
+                  table td {
+                      padding: 12px;
+                      border-bottom: 1px solid #e0e0e0;
+                      background: white;
+                  }
+                  table tr:hover {
+                      background: #f5f5f5;
+                  }
+                  .cpu-usage {
+                      background: linear-gradient(90deg, #ff6b6b, #feca57);
+                  }
+                  .mem-usage {
+                      background: linear-gradient(90deg, #4ecdc4, #44a08d);
+                  }
+                  .disk-usage {
+                      background: linear-gradient(90deg, #f093fb, #f5576c);
+                  }
+                  .footer {
+                      background: #f8f9fa;
+                      padding: 20px;
+                      text-align: center;
+                      border-top: 1px solid #e0e0e0;
+                      color: #666;
+                      font-size: 0.9em;
+                  }
+                  .metric-value {
+                      font-size: 1.3em;
+                      font-weight: bold;
+                      color: #667eea;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>🖥️ System Performance Report</h1>
+                      <p>Generated on {{ sys_datetime.stdout }}</p>
+                  </div>
+                  
+                  <div class="content">
+                      <!-- SYSTEM INFO SECTION -->
+                      <div class="section">
+                          <h2>📋 System Information</h2>
+                          <div class="info-grid">
+                              <div class="info-item">
+                                  <div class="info-label">Uptime</div>
+                                  <div class="info-value">{{ uptime.stdout }}</div>
+                              </div>
+                              <div class="info-item">
+                                  <div class="info-label">Kernel</div>
+                                  <div class="info-value">{{ kernel_info.stdout.split('|')[0] }}</div>
+                              </div>
+                              <div class="info-item">
+                                  <div class="info-label">OS</div>
+                                  <div class="info-value">{{ kernel_info.stdout.split('|')[1] }}</div>
+                              </div>
+                              <div class="info-item">
+                                  <div class="info-label">Current Date/Time</div>
+                                  <div class="info-value">{{ sys_datetime.stdout }}</div>
+                              </div>
+                          </div>
+                      </div>
+
+                      <!-- CPU SECTION -->
+                      <div class="section">
+                          <h2>⚙️ CPU Metrics</h2>
+                          <div class="info-grid">
+                              {% for line in cpu_info.stdout.split('\n') %}
+                              {% if line %}
+                              <div class="info-item">
+                                  <div class="info-label">{{ line.split(':')[0] }}</div>
+                                  <div class="info-value">{{ line.split(':')[1] | trim }}</div>
+                              </div>
+                              {% endif %}
+                              {% endfor %}
+                          </div>
+                          <div class="info-item" style="margin-top: 15px;">
+                              <div class="info-label">Load Average</div>
+                              <div class="info-value">{{ load_avg.stdout | trim }}</div>
+                          </div>
+                          <div class="info-item" style="margin-top: 15px;">
+                              <div class="info-label">CPU Usage Breakdown</div>
+                              <div class="info-value">{{ cpu_usage.stdout }}</div>
+                          </div>
+                      </div>
+
+                      <!-- MEMORY SECTION -->
+                      <div class="section">
+                          <h2>🧠 Memory Metrics</h2>
+                          <div class="info-item" style="margin-bottom: 15px;">
+                              <div class="info-label">Memory Usage: {{ memory_usage_pct.stdout }}%</div>
+                              <div class="progress-bar">
+                                  <div class="progress-fill mem-usage" style="width: {{ memory_usage_pct.stdout }}%"></div>
+                              </div>
+                              <div class="info-value" style="margin-top: 10px;">
+                                  {% set mem_parts = memory_info.stdout.split('|') %}
+                                  Total: {{ mem_parts[0] }} | Used: {{ mem_parts[1] }} | Free: {{ mem_parts[2] }} | Available: {{ mem_parts[3] }}
+                              </div>
+                          </div>
+                          <div class="info-item">
+                              <div class="info-label">Swap Information</div>
+                              <div class="info-value">
+                                  {% set swap_parts = swap_info.stdout.split('|') %}
+                                  Total: {{ swap_parts[0] }} | Used: {{ swap_parts[1] }} | Free: {{ swap_parts[2] }}
+                              </div>
+                          </div>
+                          <div class="info-item" style="margin-top: 15px;">
+                              <div class="info-label">Memory Cache</div>
+                              <table>
+                                  {% for line in memory_cache.stdout.split('\n') %}
+                                  {% if line %}
+                                  <tr>
+                                      <td>{{ line }}</td>
+                                  </tr>
+                                  {% endif %}
+                                  {% endfor %}
+                              </table>
+                          </div>
+                      </div>
+
+                      <!-- DISK SECTION -->
+                      <div class="section">
+                          <h2>💾 Disk Metrics</h2>
+                          <table>
+                              <thead>
+                                  <tr>
+                                      <th>Filesystem</th>
+                                      <th>Total</th>
+                                      <th>Used</th>
+                                      <th>Free</th>
+                                      <th>Usage %</th>
+                                  </tr>
+                              </thead>
+                              <tbody>
+                                  {% for line in disk_usage.stdout.split('\n') %}
+                                  {% if line %}
+                                  {% set parts = line.split('|') %}
+                                  <tr>
+                                      <td>{{ parts[0] }}</td>
+                                      <td>{{ parts[1] }}</td>
+                                      <td>{{ parts[2] }}</td>
+                                      <td>{{ parts[3] }}</td>
+                                      <td>
+                                          <div class="progress-bar">
+                                              <div class="progress-fill disk-usage" style="width: {{ parts[4] | replace('%', '') }}%"></div>
+                                          </div>
+                                          {{ parts[4] }}
+                                      </td>
+                                  </tr>
+                                  {% endif %}
+                                  {% endfor %}
+                              </tbody>
+                          </table>
+                          {% if disk_io.stdout %}
+                          <div class="info-item" style="margin-top: 15px;">
+                              <div class="info-label">Disk I/O Statistics</div>
+                              <table>
+                                  <thead>
+                                      <tr>
+                                          <th>Device</th>
+                                          <th>Read (KB/s)</th>
+                                          <th>Write (KB/s)</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody>
+                                      {% for line in disk_io.stdout.split('\n') %}
+                                      {% if line %}
+                                      {% set parts = line.split('|') %}
+                                      <tr>
+                                          <td>{{ parts[0] }}</td>
+                                          <td>{{ parts[1] }}</td>
+                                          <td>{{ parts[2] }}</td>
+                                      </tr>
+                                      {% endif %}
+                                      {% endfor %}
+                                  </tbody>
+                              </table>
+                          </div>
+                          {% endif %}
+                      </div>
+
+                      <!-- NETWORK SECTION -->
+                      <div class="section">
+                          <h2>🌐 Network Metrics</h2>
+                          <div class="info-item" style="margin-bottom: 15px;">
+                              <div class="info-label">Network Configuration</div>
+                              <table>
+                                  <thead>
+                                      <tr>
+                                          <th>Interface</th>
+                                          <th>IP Address</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody>
+                                      {% for line in network_config.stdout.split('\n') %}
+                                      {% if line %}
+                                      <tr>
+                                          <td colspan="2">{{ line }}</td>
+                                      </tr>
+                                      {% endif %}
+                                      {% endfor %}
+                                  </tbody>
+                              </table>
+                          </div>
+                          {% if network_conn.stdout and network_conn.stdout != 'N/A|N/A|N/A|N/A' %}
+                          <div class="info-item">
+                              <div class="info-label">Network Connections</div>
+                              <div class="info-grid">
+                                  {% set conn_parts = network_conn.stdout.split('|') %}
+                                  <div class="info-item">
+                                      <div class="info-label">TCP Connections</div>
+                                      <div class="metric-value">{{ conn_parts[0] }}</div>
+                                  </div>
+                                  <div class="info-item">
+                                      <div class="info-label">UDP Connections</div>
+                                      <div class="metric-value">{{ conn_parts[1] }}</div>
+                                  </div>
+                                  <div class="info-item">
+                                      <div class="info-label">ESTABLISHED</div>
+                                      <div class="metric-value">{{ conn_parts[2] }}</div>
+                                  </div>
+                                  <div class="info-item">
+                                      <div class="info-label">TIME_WAIT</div>
+                                      <div class="metric-value">{{ conn_parts[3] }}</div>
+                                  </div>
+                              </div>
+                          </div>
+                          {% endif %}
+                      </div>
+
+                      <!-- PROCESSES SECTION -->
+                      <div class="section">
+                          <h2>🔄 Process Metrics</h2>
+                          <div class="info-grid">
+                              {% set proc_parts = process_count.stdout.split('|') %}
+                              <div class="info-item">
+                                  <div class="info-label">Total Processes</div>
+                                  <div class="metric-value">{{ proc_parts[0] }}</div>
+                              </div>
+                              <div class="info-item">
+                                  <div class="info-label">Running</div>
+                                  <div class="metric-value">{{ proc_parts[1] }}</div>
+                              </div>
+                              <div class="info-item">
+                                  <div class="info-label">Sleeping</div>
+                                  <div class="metric-value">{{ proc_parts[2] }}</div>
+                              </div>
+                          </div>
+                          
+                          <div style="margin-top: 20px;">
+                              <h3 style="color: #667eea; margin-bottom: 10px;">Top CPU Consuming Processes</h3>
+                              <table>
+                                  <thead>
+                                      <tr>
+                                          <th>Process</th>
+                                          <th>CPU %</th>
+                                          <th>RAM (MB)</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody>
+                                      {% for line in top_cpu_procs.stdout.split('\n') %}
+                                      {% if line %}
+                                      {% set parts = line.split('|') %}
+                                      <tr>
+                                          <td>{{ parts[0] }}</td>
+                                          <td>{{ parts[1] }}</td>
+                                          <td>{{ parts[2] }}</td>
+                                      </tr>
+                                      {% endif %}
+                                      {% endfor %}
+                                  </tbody>
+                              </table>
+                          </div>
+
+                          <div style="margin-top: 20px;">
+                              <h3 style="color: #667eea; margin-bottom: 10px;">Top Memory Consuming Processes</h3>
+                              <table>
+                                  <thead>
+                                      <tr>
+                                          <th>Process</th>
+                                          <th>MEM %</th>
+                                          <th>RAM (MB)</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody>
+                                      {% for line in top_mem_procs.stdout.split('\n') %}
+                                      {% if line %}
+                                      {% set parts = line.split('|') %}
+                                      <tr>
+                                          <td>{{ parts[0] }}</td>
+                                          <td>{{ parts[1] }}</td>
+                                          <td>{{ parts[2] }}</td>
+                                      </tr>
+                                      {% endif %}
+                                      {% endfor %}
+                                  </tbody>
+                              </table>
+                          </div>
+                      </div>
+
+                      <!-- TEMPERATURE SECTION -->
+                      {% if system_temp.stdout and 'Not available' not in system_temp.stdout %}
+                      <div class="section">
+                          <h2>🌡️ System Temperature</h2>
+                          <table>
+                              <tbody>
+                                  {% for line in system_temp.stdout.split('\n') %}
+                                  {% if line %}
+                                  <tr>
+                                      <td>{{ line }}</td>
+                                  </tr>
+                                  {% endif %}
+                                  {% endfor %}
+                              </tbody>
+                          </table>
+                      </div>
+                      {% endif %}
+
+                      <!-- FILESYSTEMS SECTION -->
+                      <div class="section">
+                          <h2>📁 Mounted Filesystems</h2>
+                          <table>
+                              <tbody>
+                                  {% for line in filesystems.stdout.split('\n') %}
+                                  {% if line %}
+                                  <tr>
+                                      <td>{{ line }}</td>
+                                  </tr>
+                                  {% endif %}
+                                  {% endfor %}
+                              </tbody>
+                          </table>
+                      </div>
+                  </div>
+
+                  <div class="footer">
+                      <p>System Performance Report | Generated by Ansible | Report saved at: {{ report_file }}</p>
+                  </div>
+              </div>
+          </body>
+          </html>
+        dest: "{{ report_file }}"
+        mode: '0644'
+
+    - name: Display report location
+      debug:
+        msg: "✅ HTML Report generated at: {{ report_file }}"
+
+    - name: Start simple HTTP server
+      shell: |
+        cd {{ report_dir }}
+        nohup python3 -m http.server {{ http_port }} > /tmp/http_server.log 2>&1 &
+        echo $! > /tmp/http_server.pid
+        sleep 2
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display access information
+      debug:
+        msg: |
+          ✅ System Performance Report Generated Successfully!
+          
+          📄 Report File: {{ report_file }}
+          🌐 Access via HTTP: http://localhost:{{ http_port }}/system_report.html
+          
+          To view the report:
+          1. Open your browser to: http://localhost:{{ http_port }}/system_report.html
+          2. Or open the file directly: {{ report_file }}
+          
+          To stop the HTTP server:
+          kill $(cat /tmp/http_server.pid)

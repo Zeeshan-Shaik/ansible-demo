@@ -1,0 +1,37 @@
+---
+- name: System Performance Report
+  hosts: local
+  become: false
+  gather_facts: no
+
+  tasks:
+  - name: Get CPU Usage
+    shell: top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}'
+    register: cpu_usage
+
+  - name: Get Memory Usage
+    shell: free -m | awk 'NR==2{printf "%.2f", $3*100/$2}'
+    register: memory_usage
+
+  - name: Get Disk Usage
+    shell: df -h / | awk 'NR==2 {print $5}'
+    register: disk_usage
+
+  - name: Get Loag Average
+    shell: uptime | awk -F'loag average:' '{print $2}'
+    register: load_avg
+    
+  - name: Get System Uptime
+    shell: uptime -p
+    register: uptime_output
+    
+  - name: Display Final System Report
+    debug:
+      msg:
+        - "==== SYSTEM PERFORMANCE REPORT ===="
+        - "CPU Usage: {{ cpu_usage.stdout }}%"
+        - "Memory Usage: {{ memory_usage.stdout }}%"
+        - "Disk Usage: {{ disk_usage.stdout }}"
+        - "Load Average: {{ load_avg.stdout }}"
+        - "System Uptime: {{ uptime_output.stdout }}"
+...

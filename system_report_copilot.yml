@@ -1,0 +1,251 @@
+---
+- name: Comprehensive System Performance Check
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    report_title: "=== SYSTEM PERFORMANCE METRICS REPORT ==="
+
+  tasks:
+    - name: Display Report Title
+      debug:
+        msg: "{{ report_title }}"
+
+    # ============ CPU METRICS ============
+    - name: Get CPU Information
+      shell: |
+        echo "CPU Count: $(nproc)"
+        echo "CPU Model: $(lscpu | grep 'Model name' | cut -d: -f2 | xargs)"
+        echo "CPU Cores: $(lscpu | grep '^Core' | awk '{print $NF}')"
+        echo "CPU Threads: $(lscpu | grep '^Thread' | awk '{print $NF}')"
+        echo "CPU MHz: $(lscpu | grep 'CPU max MHz' | awk '{print $NF}')"
+      register: cpu_info
+      changed_when: false
+
+    - name: Display CPU Information
+      debug:
+        msg: "{{ cpu_info.stdout }}"
+
+    - name: Get CPU Load Average
+      shell: |
+        uptime | awk -F'load average:' '{print "Load Average: " $2}'
+      register: load_avg
+      changed_when: false
+
+    - name: Display CPU Load
+      debug:
+        msg: "{{ load_avg.stdout }}"
+
+    - name: Get CPU Usage Percentage
+      shell: |
+        top -bn1 | grep "Cpu(s)" | awk '{print "CPU Usage: " $2 " user, " $4 " system, " $6 " nice, " $8 " idle"}'
+      register: cpu_usage
+      changed_when: false
+
+    - name: Display CPU Usage
+      debug:
+        msg: "{{ cpu_usage.stdout }}"
+
+    # ============ MEMORY METRICS ============
+    - name: Get Memory Information
+      shell: |
+        free -h | awk 'NR==2{print "Memory Total: " $2 "\nMemory Used: " $3 "\nMemory Free: " $4 "\nMemory Available: " $7}'
+      register: memory_info
+      changed_when: false
+
+    - name: Display Memory Information
+      debug:
+        msg: "{{ memory_info.stdout }}"
+
+    - name: Get Memory Usage Percentage
+      shell: |
+        free | awk 'NR==2{printf "Memory Usage: %.2f%%\n", ($3/$2)*100}'
+      register: memory_usage
+      changed_when: false
+
+    - name: Display Memory Usage Percentage
+      debug:
+        msg: "{{ memory_usage.stdout }}"
+
+    - name: Get Swap Information
+      shell: |
+        free -h | awk 'NR==3{print "Swap Total: " $2 "\nSwap Used: " $3 "\nSwap Free: " $4}'
+      register: swap_info
+      changed_when: false
+
+    - name: Display Swap Information
+      debug:
+        msg: "{{ swap_info.stdout }}"
+
+    # ============ DISK METRICS ============
+    - name: Get Disk Usage (all filesystems)
+      shell: |
+        df -h | awk 'NR>1{print $1 ": " $5 " used, " $4 " free, " $2 " total"}'
+      register: disk_usage
+      changed_when: false
+
+    - name: Display Disk Usage
+      debug:
+        msg: "{{ disk_usage.stdout_lines }}"
+
+    - name: Get Disk I/O Statistics
+      shell: |
+        iostat -x 1 2 | tail -n +4 | head -n 5 | awk '{if(NF>0) print "Device: " $1 ", Read (KB/s): " $6 ", Write (KB/s): " $7}'
+      register: disk_io
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display Disk I/O
+      debug:
+        msg: "{{ disk_io.stdout }}"
+      ignore_errors: true
+
+    # ============ NETWORK METRICS ============
+    - name: Get Network Interface Statistics
+      shell: |
+        ip -s link | awk '/^[0-9]+:/{iface=$2; gsub(":","",iface)} /RX packets|TX packets/{if(iface) print iface ": " $0}'
+      register: network_stats
+      changed_when: false
+
+    - name: Display Network Statistics
+      debug:
+        msg: "{{ network_stats.stdout }}"
+
+    - name: Get Network Configuration
+      shell: |
+        ip addr | grep -E '^\s+inet ' | awk '{print $NF ": " $2}'
+      register: network_config
+      changed_when: false
+
+    - name: Display Network Configuration
+      debug:
+        msg: "{{ network_config.stdout_lines }}"
+
+    - name: Get Network Connections Summary
+      shell: |
+        echo "TCP Connections: $(netstat -tn 2>/dev/null | wc -l)"
+        echo "UDP Connections: $(netstat -un 2>/dev/null | wc -l)"
+        echo "ESTABLISHED: $(netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l)"
+        echo "TIME_WAIT: $(netstat -tn 2>/dev/null | grep TIME_WAIT | wc -l)"
+      register: network_conn
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display Network Connections
+      debug:
+        msg: "{{ network_conn.stdout }}"
+      ignore_errors: true
+
+    # ============ PROCESS METRICS ============
+    - name: Get Process Count
+      shell: |
+        echo "Total Processes: $(ps aux | wc -l)"
+        echo "Running Processes: $(ps -e --no-headers | wc -l)"
+        echo "Sleeping Processes: $(ps -e --no-headers -o state | grep S | wc -l)"
+      register: process_count
+      changed_when: false
+
+    - name: Display Process Count
+      debug:
+        msg: "{{ process_count.stdout }}"
+
+    - name: Get Top CPU Consuming Processes
+      shell: |
+        ps aux --sort=-%cpu | head -6 | awk 'NR>1{printf "%s: %s%% CPU, %s MB RAM\n", $11, $3, $6/1000}'
+      register: top_cpu_procs
+      changed_when: false
+
+    - name: Display Top CPU Processes
+      debug:
+        msg: "{{ top_cpu_procs.stdout_lines }}"
+
+    - name: Get Top Memory Consuming Processes
+      shell: |
+        ps aux --sort=-%mem | head -6 | awk 'NR>1{printf "%s: %s%% MEM, %s MB RAM\n", $11, $4, $6/1000}'
+      register: top_mem_procs
+      changed_when: false
+
+    - name: Display Top Memory Processes
+      debug:
+        msg: "{{ top_mem_procs.stdout_lines }}"
+
+    # ============ SYSTEM METRICS ============
+    - name: Get System Uptime
+      shell: |
+        uptime -p
+      register: uptime
+      changed_when: false
+
+    - name: Display Uptime
+      debug:
+        msg: "Uptime: {{ uptime.stdout }}"
+
+    - name: Get System Date and Time
+      shell: |
+        date '+Date: %Y-%m-%d %H:%M:%S %Z'
+      register: sys_datetime
+      changed_when: false
+
+    - name: Display System Date/Time
+      debug:
+        msg: "{{ sys_datetime.stdout }}"
+
+    - name: Get Kernel Information
+      shell: |
+        echo "Kernel: $(uname -r)"
+        echo "OS: $(lsb_release -d | cut -f2)"
+      register: kernel_info
+      changed_when: false
+
+    - name: Display Kernel Information
+      debug:
+        msg: "{{ kernel_info.stdout }}"
+
+    - name: Get System Temperature (if available)
+      shell: |
+        sensors 2>/dev/null | grep -E 'Core|Package' | head -5 || echo "Temperature sensor data not available"
+      register: system_temp
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display System Temperature
+      debug:
+        msg: "{{ system_temp.stdout_lines }}"
+
+    - name: Get Mounted Filesystems
+      shell: |
+        mount | grep -E 'on / |ext4|xfs|btrfs' | awk '{print $1 " on " $3 " (" $5 ")"}'
+      register: filesystems
+      changed_when: false
+
+    - name: Display Mounted Filesystems
+      debug:
+        msg: "{{ filesystems.stdout_lines }}"
+
+    - name: Get Open Files Count
+      shell: |
+        echo "Open Files: $(lsof 2>/dev/null | wc -l)"
+        echo "File Descriptor Limit: $(ulimit -n)"
+      register: open_files
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display Open Files
+      debug:
+        msg: "{{ open_files.stdout }}"
+      ignore_errors: true
+
+    - name: Get System Memory Cache
+      shell: |
+        cat /proc/meminfo | grep -E '^Buffers|Cached|Slab' | awk '{print $1 " " $2 " KB"}'
+      register: memory_cache
+      changed_when: false
+
+    - name: Display Memory Cache
+      debug:
+        msg: "{{ memory_cache.stdout_lines }}"
+
+    # ============ END REPORT ============
+    - name: Display Report End
+      debug:
+        msg: "=== END OF REPORT ==="
